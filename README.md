@@ -66,7 +66,7 @@ I am going to use the required technologies in the following ways.
 
 For this deliverable I did the following. I checked the box `[x]` and added a description for things I completed.
 
-- [x] **Server deployed and accessible with custom domain name** - [My server link](https://simon.cs260.click).
+- [x] **Server deployed and accessible with custom domain name** - [My server link](https://simon.sugarsantillan.com).
 
 ## 🚀 HTML deliverable
 
@@ -125,3 +125,44 @@ For this deliverable I did the following. I checked the box `[x]` and added a de
 
 - [x] **Stores data in MongoDB** - Scores stored in MongoDB from `service/database.js`.
 - [x] **Stores credentials in MongoDB** - Auth stored in MongoDB from `service/database.js`.
+
+## Production database verification (November 17, 2026)
+
+Production: https://simon.sugarsantillan.com. Database: `simon`, collections
+`user` and `score`. Backend dependencies are pinned by `service/package-lock.json`;
+the MongoDB driver belongs in the backend, not the React package.
+
+The production connection issue was the Atlas IP Access List: only the home IP
+was allowed. Adding the EC2 address `44.205.198.203/32` restored the connection.
+The direct EC2 Atlas ping and staged deployment preflight both passed.
+
+Verified against production HTTPS endpoints and direct Atlas reads:
+
+- Registration creates a user with a bcrypt password hash.
+- Login succeeds with the correct password and rejects an incorrect password.
+- Authenticated score submission creates a document in `simon.score`.
+- The session, login, and saved score survive a PM2 restart.
+- Logout removes authorization; unauthenticated scores requests return 401.
+
+Verification retained one account named `cs260-verification-…@example.invalid`
+and one score of 1. No production records were deleted. Simon and Startup are
+online; the t3.nano and existing 1 GB swap remain unchanged.
+
+Database startup now waits for a successful ping before listening. URI credentials
+are percent-encoded and errors do not log connection details. Keep the local
+`service/dbConfig.json` untracked; it contains `hostname`, `userName`, and `password`.
+TLS certificate verification stays enabled.
+
+Deploy from this directory with
+`./deployService.sh -k ../cs260-key.pem -h sugarsantillan.com -s simon`.
+The script uses `npm ci`, installs into a separate remote directory, and requires
+an Atlas ping before stopping and replacing Simon. The previous deployment is
+retained as `services/simon-previous`. Failed preflight leaves the running service
+untouched; inspect and remove failed staging directories when no longer needed.
+
+To repeat the HTTPS checks, run `node scripts/verify-production.mjs`. This creates
+one clearly named verification account and one score without deleting records.
+For direct Atlas checks and persistence across a PM2 restart, run that script
+on EC2 with `--ec2`, with the NVM Node environment loaded. The script uses the
+existing deployment configuration, keeps its generated password and session in
+memory, verifies both collections, restarts only Simon, and checks login again.

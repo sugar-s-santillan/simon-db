@@ -130,6 +130,15 @@ function setAuthCookie(res, authToken) {
   });
 }
 
-const httpService = app.listen(port, () => {
-  console.log(`Listening on port ${port}`);
-});
+DB.connect()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Listening on port ${port}`);
+    });
+  })
+  .catch(async (err) => {
+    // Error messages can contain connection details; report only the error type.
+    console.error(`Database startup failed (${err.name}); check Atlas access, TLS, and configuration`);
+    await DB.close();
+    process.exit(1);
+  });

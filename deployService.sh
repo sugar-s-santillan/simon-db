@@ -1,5 +1,7 @@
-while getopts k:h:s: flag
-do
+#!/usr/bin/env bash
+set -euo pipefail
+
+while getopts k:h:s: flag; do
     case "${flag}" in
         k) key=${OPTARG};;
         h) hostname=${OPTARG};;
@@ -7,45 +9,44 @@ do
     esac
 done
 
-if [[ -z "$key" || -z "$hostname" || -z "$service" ]]; then
-    printf "\nMissing required parameter.\n"
-    printf "  syntax: deployService.sh -k <pem key file> -h <hostname> -s <service>\n\n"
+if [[ -z "${key:-}" || -z "${hostname:-}" || -z "${service:-}" ]]; then
+    echo 'Usage: deployService.sh -k <pem key file> -h <hostname> -s <service>' >&2
     exit 1
 fi
+[[ "$service" =~ ^[a-zA-Z0-9_-]+$ ]] || exit 1
+[[ "$hostname" =~ ^[a-zA-Z0-9.-]+$ ]] || exit 1
+[[ -f service/dbConfig.json ]] || { echo 'Missing service/dbConfig.json' >&2; exit 1; }
 
-printf "\n----> Deploying React bundle $service to $hostname with $key\n"
-
-# Step 1
-printf "\n----> Build the distribution package\n"
+# Build locally; never modify a running service during dependency installation.
+trap 'rm -rf build dist' EXIT
 rm -rf build
-mkdir build
-npm install # make sure vite is installed so that we can bundle
-npm run build # build the React front end
-cp -rf dist build/public # move the React front end to the target distribution
-cp service/*.js build # move the back end service to the target distribution
-cp service/*.json build
+mkdir -m 700 build
+npm ci
+npm run build
+cp -R dist build/public
+cp service/*.js build/
+cp service/package.json service/package-lock.json service/dbConfig.json build/
+chmod 600 build/dbConfig.json
 
-# Step 2
-printf "\n----> Clearing out previous distribution on the target\n"
-ssh -i "$key" ubuntu@$hostname << ENDSSH
-rm -rf services/${service}
-mkdir -p services/${service}
+ssh -i "$key" "ubuntu@$hostname" "mkdir -p services; stage=\$(mktemp -d services/${service}-stage.XXXXXX); printf '%s' \"\$stage\"" > build/.stage
+stage=$(cat build/.stage)
+[[ "$stage" =~ ^services/${service}-stage\.[a-zA-Z0-9]+$ ]] || exit 1
+scp -r -i "$key" build/public build/*.js build/*.json "ubuntu@$hostname:$stage/"
+ssh -i "$key" "ubuntu@$hostname" bash -s -- "$service" "$stage" <<'ENDSSH'
+set -euo pipefail
+export NVM_DIR="$HOME/.nvm"
+. "$NVM_DIR/nvm.sh"
+service=$1
+stage=$2
+cd "$HOME/$stage"
+chmod 600 dbConfig.json
+npm ci --omit=dev
+# A failed ping leaves the existing service untouched.
+node -e 'const db=require("./database"); db.connect().then(()=>db.close()).catch(async e=>{console.error("Atlas preflight failed: "+e.name);await db.close();process.exit(1)})'
+cd "$HOME"
+pm2 stop "$service"
+rm -rf "services/${service}-previous"
+mv "services/$service" "services/${service}-previous"
+mv "$stage" "services/$service"
+pm2 restart "$service"
 ENDSSH
-
-# Step 3
-printf "\n----> Copy the distribution package to the target\n"
-scp -r -i "$key" build/* ubuntu@$hostname:services/$service
-
-# Step 4
-printf "\n----> Deploy the service on the target\n"
-ssh -i "$key" ubuntu@$hostname << ENDSSH
-bash -i
-cd services/${service}
-npm install
-pm2 restart ${service}
-ENDSSH
-
-# Step 5
-printf "\n----> Removing local copy of the distribution package\n"
-rm -rf build
-rm -rf dist
